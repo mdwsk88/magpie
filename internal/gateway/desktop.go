@@ -105,13 +105,15 @@ func aliasNumber(id string) string {
 func aliasFor(id string) string { return desktopAlias + aliasNumber(id) }
 
 // claudeModel is the Claude model an entry is, lowercased and without a
-// date or a vendor's "anthropic/" in front, or "" when it is none.
+// date or a vendor's "anthropic/" in front, or "" when it is none. A version
+// a provider writes with a dot (Copilot's claude-opus-5.5) is given with a
+// dash, as Claude Desktop and Claude Code know the model (provider.ClaudeDashed).
 func claudeModel(e provider.Entry) string {
 	m := strings.ToLower(e.Model)
 	if i := strings.LastIndex(m, "/"); i >= 0 {
 		m = m[i+1:]
 	}
-	m = desktopDated.ReplaceAllString(m, "")
+	m = desktopDated.ReplaceAllString(provider.ClaudeDashed(m), "")
 	if desktopClaude.MatchString(m) {
 		return m
 	}

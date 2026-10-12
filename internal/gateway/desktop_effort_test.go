@@ -61,6 +61,13 @@ func TestClaudeDesktopEffortIDs(t *testing.T) {
 		{provider.Entry{ID: "or/anthropic/claude-opus-4-8", Model: "anthropic/claude-opus-4-8", Efforts: levels}, `^magpie-\d{10}\.anthropic\.claude-opus-4-8$`, true},
 		{provider.Entry{ID: "x/Claude-Sonnet-4-6-20260101", Model: "Claude-Sonnet-4-6-20260101", Efforts: levels}, `^magpie-\d{10}\.anthropic\.claude-sonnet-4-6$`, true},
 		{provider.Entry{ID: "x/claude-haiku-4-5", Model: "claude-haiku-4-5", Efforts: levels}, `^magpie-\d{10}\.anthropic\.claude-haiku-4-5$`, false},
+		// Copilot, and the relays that follow it, write a Claude version with a
+		// dot; Desktop and Claude Code read a Claude model by its dashed id
+		{provider.Entry{ID: "copilot/claude-opus-4.6", Model: "claude-opus-4.6", Efforts: levels}, `^magpie-\d{10}\.anthropic\.claude-opus-4-6$`, true},
+		{provider.Entry{ID: "copilot/claude-opus-5.5", Model: "claude-opus-5.5", Efforts: levels}, `^magpie-\d{10}\.anthropic\.claude-opus-5-5$`, false},
+		{provider.Entry{ID: "copilot/claude-haiku-4.5", Model: "claude-haiku-4.5", Efforts: []string{"none", "high"}}, `^magpie-\d{10}\.anthropic\.claude-haiku-4-5$`, false},
+		{provider.Entry{ID: "x/Claude-Sonnet-4.5-20250929", Model: "Claude-Sonnet-4.5-20250929", Efforts: levels}, `^magpie-\d{10}\.anthropic\.claude-sonnet-4-5$`, false},
+		{provider.Entry{ID: "x/claude-sonnet-4.5-thinking", Model: "claude-sonnet-4.5-thinking", Efforts: levels}, `^mythos-magpie-\d{10}$`, true},
 		{provider.Entry{ID: "group/coding", Model: "claude-opus-5-5", Group: "coding", Efforts: levels}, `^mythos-magpie-\d{10}$`, true},
 		{provider.Entry{ID: "zai/glm-4.5-air", Model: "glm-4.5-air"}, `^anthropic/magpie-\d{10}$`, false},
 		{provider.Entry{ID: "x/claude-opus-4-8", Model: "claude-opus-4-8"}, `^x/claude-opus-4-8$`, false},
@@ -85,10 +92,10 @@ func TestClaudeDesktopEffortIDs(t *testing.T) {
 
 	setup(t, provider.Anthropic, &fake{})
 	if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Anthropic: "http://127.0.0.1:1",
-		Models: []string{"m1", "claude-opus-4-8", "m2"}}); err != nil {
+		Models: []string{"m1", "claude-opus-4-8", "claude-opus-5.5", "m2"}}); err != nil {
 		t.Fatal(err)
 	}
-	for _, ref := range []string{"fake/m1", "fake/claude-opus-4-8"} {
+	for _, ref := range []string{"fake/m1", "fake/claude-opus-4-8", "fake/claude-opus-5.5"} {
 		if err := provider.SetModelEfforts(ref, []string{"low", "high"}); err != nil {
 			t.Fatal(err)
 		}
@@ -112,6 +119,7 @@ func TestClaudeDesktopEffortIDs(t *testing.T) {
 	for id, want := range map[string]string{
 		"fake/m1":              desktopEffortAlias + aliasNumber("fake/m1"),
 		"fake/claude-opus-4-8": "magpie-" + aliasNumber("fake/claude-opus-4-8") + ".anthropic.claude-opus-4-8",
+		"fake/claude-opus-5.5": "magpie-" + aliasNumber("fake/claude-opus-5.5") + ".anthropic.claude-opus-5-5",
 		"fake/m2":              aliasFor("fake/m2"),
 	} {
 		if got[id] != want {
@@ -164,6 +172,53 @@ func TestClaudeDesktopEffortReachesModel(t *testing.T) {
 		}
 		if sent.Model != "m1" || sent.OutputConfig.Effort != c.sent {
 			t.Errorf("%s: sent %s at %q, want m1 at %q", c.asked, sent.Model, sent.OutputConfig.Effort, c.sent)
+		}
+	}
+}
+
+// a Claude model a provider spells with a dot is listed to Desktop by its
+// dashed id, so Claude Code knows it for the Claude model it is, and a turn
+// on that id reaches the provider's own spelling (Copilot's claude-opus-5.5
+// listed as mythos-magpie-<n> ran as a model Claude Code doesn't know: 32000
+// output tokens, effort high, and claude-haiku-4.5 asked for an effort Copilot
+// answers with 400)
+func TestClaudeDesktopDottedClaudeReachesItsModel(t *testing.T) {
+	f := &fake{reply: sse(
+		`event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"claude-opus-5.5","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`,
+		`event: message_stop`+"\n"+`data: {"type":"message_stop"}`)}
+	up := setup(t, provider.Anthropic, f)
+	if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Anthropic: up.URL,
+		Models: []string{"claude-opus-5.5"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SetModelEfforts("fake/claude-opus-5.5", []string{"low", "medium", "high"}); err != nil {
+		t.Fatal(err)
+	}
+	listed := claudeLooking(provider.Entry{ID: "fake/claude-opus-5.5", Model: "claude-opus-5.5", Efforts: []string{"low", "medium", "high"}})
+	if want := "magpie-" + aliasNumber("fake/claude-opus-5.5") + ".anthropic.claude-opus-5-5"; listed != want {
+		t.Fatalf("listed as %q, want %q", listed, want)
+	}
+	for _, asked := range []string{listed, listed + "[1m]"} {
+		body := `{"model":"` + asked + `","max_tokens":32000,"stream":true,"thinking":{"type":"adaptive"},"output_config":{"effort":"high"},` +
+			`"tools":[{"name":"Bash","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hi"}]}`
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+		req.Header.Set("x-api-key", Token+"-claude-desktop")
+		rec := httptest.NewRecorder()
+		New().Handler().ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("%s: %d %s", asked, rec.Code, rec.Body)
+		}
+		var sent struct {
+			Model        string `json:"model"`
+			OutputConfig struct {
+				Effort string `json:"effort"`
+			} `json:"output_config"`
+		}
+		if err := json.Unmarshal(f.got, &sent); err != nil {
+			t.Fatal(err)
+		}
+		if sent.Model != "claude-opus-5.5" || sent.OutputConfig.Effort != "high" {
+			t.Errorf("%s: sent %s at %q, want claude-opus-5.5 at high", asked, sent.Model, sent.OutputConfig.Effort)
 		}
 	}
 }
