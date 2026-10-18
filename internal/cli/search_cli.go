@@ -24,6 +24,9 @@ const searchUsage = `usage:
   magpie search off <api>                    keep one, key and all, but never ask it
   magpie search on <api>                     ask it again
   magpie search move <api> <n>               put one at place n in the order they are asked
+  magpie search mix <api>,<api>[,…]          ask these together, at once, and give the model their
+                                             pages merged, a page found twice once (at most 12)
+  magpie search mix off                      ask them one at a time again, in order
   magpie search rm <api>                     take one away
 
   apis: tavily, brave, exa, firecrawl, you, deepseek, searxng
@@ -44,6 +47,10 @@ const searchUsage = `usage:
   they were added, until one is moved), skipping one switched off: what they find goes
   to the model as it is, and no model is asked to read it.
   Without any of them, the client's search is left out.
+
+  Two or more mixed (magpie search mix) are asked first, together: a search then spends
+  each one's quota, takes as long as the slowest, and gives the model up to twice the
+  pages. The others are asked, in order, only when none of the mixed ones finds anything.
 
   e.g. magpie search add tavily tvly-…
        magpie search add searxng url=https://searx.example.com
@@ -73,6 +80,9 @@ func searchCmd(args []string) error {
 			}
 			if a.Off {
 				line += "  " + amber.Render("off")
+			}
+			if a.Mix {
+				line += "  " + green.Render("mix")
 			}
 			fmt.Println(line)
 			if gateway.CanReadSearchQuota(a) {
@@ -153,6 +163,30 @@ func searchCmd(args []string) error {
 		}
 		fmt.Println(green.Render("✓"), as[i].Name(), muted.Render(fmt.Sprintf("search API %d of %d", n, len(as))))
 		return nil
+	case "mix":
+		if len(args) != 2 {
+			return fmt.Errorf("magpie search mix <api>,<api>[,…] | off")
+		}
+		var vendors []string
+		if strings.ToLower(args[1]) != "off" {
+			for _, v := range strings.Split(args[1], ",") {
+				if v = strings.ToLower(strings.TrimSpace(v)); v != "" {
+					vendors = append(vendors, v)
+				}
+			}
+			if len(vendors) < 2 {
+				return fmt.Errorf("magpie search mix <api>,<api>[,…]: name two or more")
+			}
+		}
+		if err := provider.MixSearchAPIs(vendors); err != nil {
+			return err
+		}
+		if len(vendors) == 0 {
+			fmt.Println(green.Render("✓"), "search APIs asked one at a time, in order")
+		} else {
+			fmt.Println(green.Render("✓"), strings.Join(vendors, ", "), muted.Render("asked together"))
+		}
+		return nil
 	case "rm", "remove":
 		if len(args) != 2 {
 			return fmt.Errorf("magpie search rm <api>")
@@ -163,7 +197,7 @@ func searchCmd(args []string) error {
 		fmt.Println(green.Render("✓"), "removed")
 		return nil
 	}
-	return fmt.Errorf("magpie search [add|on|off|move|rm] (magpie search help)")
+	return fmt.Errorf("magpie search [add|on|off|move|mix|rm] (magpie search help)")
 }
 
 // quotaLine is what one key has used of its limit, as magpie search lists
