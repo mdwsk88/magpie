@@ -27,6 +27,18 @@ var bedrockBetas = map[string]string{
 	"advanced-tool-use-2025-11-20": "tool-search-tool-2025-10-19",
 }
 
+// copilotBetas are betas Copilot's Messages API takes by Anthropic's own
+// name only. Claude Desktop's gateway mode, with its Enable tool search
+// setting on, asks tool search by Bedrock's and Vertex's name, which
+// Copilot turns away whole: 400 "unsupported beta header(s):
+// tool-search-tool-2025-10-19" (a Business account, 2026-10-24), on the
+// first request of every session, after which Claude Code turns tool search
+// off for the session and sends every tool's schema. By Anthropic's name
+// Copilot serves the same deferred tools and tool_reference results.
+var copilotBetas = map[string]string{
+	"tool-search-tool-2025-10-19": "advanced-tool-use-2025-11-20",
+}
+
 // bedrockRefuses are betas Bedrock has turned away (#176), left out from
 // the first request rather than learned from a refusal.
 var bedrockRefuses = []string{
@@ -54,8 +66,8 @@ func askedBetas(in http.Header) []string {
 func betaKey(beta string) string { return "anthropic-beta\x00" + beta }
 
 // betas is the list asked (header values, each maybe comma-separated),
-// fitted to what p takes: renamed and left out as Bedrock wants, without
-// those p has refused, and without repeats.
+// fitted to what p takes: renamed and left out as Bedrock wants, renamed
+// as Copilot wants, without those p has refused, and without repeats.
 func (s *Server) betas(p provider.Provider, asked []string) []string {
 	var out []string
 	for _, v := range asked {
@@ -70,6 +82,11 @@ func (s *Server) betas(p provider.Provider, asked []string) []string {
 				}
 				if slices.Contains(bedrockRefuses, b) {
 					continue
+				}
+			}
+			if p.Account != nil && p.Account.Agent == "copilot" {
+				if to, ok := copilotBetas[b]; ok {
+					b = to
 				}
 			}
 			if !s.fits(p.ID, betaKey(b), provider.Anthropic) || slices.Contains(out, b) {
