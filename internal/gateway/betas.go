@@ -27,6 +27,23 @@ var bedrockBetas = map[string]string{
 	"advanced-tool-use-2025-11-20": "tool-search-tool-2025-10-19",
 }
 
+// copilotBetas are betas Copilot's Messages API takes by Anthropic's own
+// name only. Claude Desktop's gateway mode, with its Enable tool search
+// setting on, asks tool search by Bedrock's and Vertex's name, which
+// Copilot turns away whole: 400 "unsupported beta header(s):
+// tool-search-tool-2025-10-19" (a Business account, 2026-10-24), on the
+// first request of every session, after which Claude Code turns tool search
+// off for the session and sends every tool's schema. A request big enough
+// that its 200 and keepalives have gone out (keepHeldAfter) before Copilot
+// answers, as a resumed session of some 300K tokens is, gets the refusal
+// in its stream instead, which Claude Code doesn't fall back from: it asks
+// again without streaming, the beta still on, and the session fails on
+// every resume (2026-11-01). By Anthropic's name Copilot serves the same
+// deferred tools and tool_reference results.
+var copilotBetas = map[string]string{
+	"tool-search-tool-2025-10-19": "advanced-tool-use-2025-11-20",
+}
+
 // bedrockRefuses are betas Bedrock has turned away (#176), left out from
 // the first request rather than learned from a refusal.
 var bedrockRefuses = []string{
@@ -55,7 +72,8 @@ func betaKey(beta string) string { return "anthropic-beta\x00" + beta }
 
 // betas is the list asked (header values, each maybe comma-separated),
 // fitted to what p takes: renamed as Bedrock and Vertex AI want, left out
-// as Bedrock does, without those p has refused, and without repeats.
+// as Bedrock does, renamed as Copilot wants, without those p has refused,
+// and without repeats.
 func (s *Server) betas(p provider.Provider, asked []string) []string {
 	var out []string
 	for _, v := range asked {
@@ -72,6 +90,11 @@ func (s *Server) betas(p provider.Provider, asked []string) []string {
 			if p.IsBedrock() {
 				if slices.Contains(bedrockRefuses, b) {
 					continue
+				}
+			}
+			if p.Account != nil && p.Account.Agent == "copilot" {
+				if to, ok := copilotBetas[b]; ok {
+					b = to
 				}
 			}
 			if !s.fits(p.ID, betaKey(b), provider.Anthropic) || slices.Contains(out, b) {
