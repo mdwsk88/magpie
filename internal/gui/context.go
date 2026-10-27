@@ -17,6 +17,7 @@ import (
 
 	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/sessions"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 // defaultWindow is the window a prompt is measured against when the
@@ -279,7 +280,11 @@ func contextOf(routes []gateway.Route, days int) ctxJSON {
 		}
 		acc.a.Calls++
 		if r.Status >= 400 || r.Error != "" {
-			acc.a.Errors++
+			// one its agent canceled was no error it saw, nor a prompt it
+			// finished asking
+			if !usage.CanceledBy(r.Status, r.Error) {
+				acc.a.Errors++
+			}
 			continue
 		}
 		p := r.Prompt

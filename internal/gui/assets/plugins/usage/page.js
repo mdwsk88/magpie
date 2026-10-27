@@ -537,7 +537,7 @@ function renderUsage() {
   const hit = u.cache_read && hitRate !== null ? t("hit rate {p}", { p: Math.round(100 * hitRate) + "%" }) : "";
   tile(fmtN(u.cache_read), t("cache read"), hit, u.cache_write ? t("{n} written", { n: fmtN(u.cache_write) }) + cacheTTLs(u, fmtN) : "");
   tile(fmtN(u.reasoning), t("reasoning"), t("inside output"));
-  tile(String(u.calls), t(u.calls === 1 ? "call" : "calls"), [u.errors ? t("{n} failed", { n: u.errors }) : "", u.retried ? t("{n} answered on a retry", { n: u.retried }) : "", u.unpriced ? t("{n} unpriced", { n: u.unpriced }) : ""].filter(Boolean).join(" · "), u.unpriced ? unpricedCallsWhy(u.unpriced) : "");
+  tile(String(u.calls), t(u.calls === 1 ? "call" : "calls"), [u.errors ? t("{n} failed", { n: u.errors }) : "", u.retried ? t("{n} answered on a retry", { n: u.retried }) : "", u.canceled ? t("{n} canceled", { n: u.canceled }) : "", u.unpriced ? t("{n} unpriced", { n: u.unpriced }) : ""].filter(Boolean).join(" · "), u.unpriced ? unpricedCallsWhy(u.unpriced) : "");
 
   // the timeline: one bar per hour, day or week; output sits on top of input
   const chart = $("#chart");
@@ -948,8 +948,10 @@ function ledProtoBadge(r) {
 }
 
 // a request that failed: told by its status, or, for one read from a
-// session file, which records none, by the error that ended it
-const ledFailed_ = (r) => r.status >= 400 || !!r.err;
+// session file, which records none, by the error that ended it. One its
+// agent canceled (r.canceled: a reply stopped, or the next message sent
+// while it came) saw no error, and is no failure
+const ledFailed_ = (r) => !r.canceled && (r.status >= 400 || !!r.err);
 const ledKey = (r) => [r.t, r.agent, r.model, r.rid, r.session, r.computer || ""].join("|");
 const ledOpen = new Set(); // the rows opened, kept across a refresh
 
@@ -968,7 +970,7 @@ function ledDetail(r, cols) {
   } else {
     // how it went, here as well as in the row's last column, which a narrow
     // window leaves out of sight (#799)
-    add("Status", r.status ? String(r.status) : r.source === "log" ? t("Succeeded") : "");
+    add("Status", r.canceled ? `${r.status} · ${t("canceled")}` : r.status ? String(r.status) : r.source === "log" ? t("Succeeded") : "");
   }
   if (Number.isFinite(r.ms) && r.ms > 0) add("Duration", (r.source === "log" ? "≈" : "") + ledTook(r.ms));
   // the way it was routed: the row's time links there too, which reads as
@@ -1222,10 +1224,18 @@ function renderLedgerDash(l) {
     b.onclick = () => ledShowStatus(ledStatusOf() === to ? "" : to);
     return b;
   };
+  // the share that succeeded is of the requests that ended in an answer or
+  // an error: not those their agent canceled, which are counted apart
+  const settled = l.calls - (l.canceled || 0);
   block("Requests", ledNum(l.calls), l.errors
-    ? jumps(jump(t("{n} failed", { n: ledNum(l.errors) }), "failed", t("Show only the failed requests")), " · " + t("{p} succeeded", { p: (100 * (1 - l.errors / l.calls)).toFixed(1) + "%" }))
+    ? jumps(jump(t("{n} failed", { n: ledNum(l.errors) }), "failed", t("Show only the failed requests")), " · " + t("{p} succeeded", { p: (100 * (1 - l.errors / settled)).toFixed(1) + "%" }))
     : line(t("none failed")));
   if (l.retried) strip.lastChild.append(jumps(jump(t("{n} answered on a retry", { n: ledNum(l.retried) }), "retried", t("Show only the requests answered on a retry"))));
+  if (l.canceled) {
+    const c = line(t("{n} canceled", { n: ledNum(l.canceled) }));
+    c.title = t("Canceled by the agent before an answer came: a reply stopped, or a message sent while it was coming. Not counted as failed.");
+    strip.lastChild.append(c);
+  }
   const c = fmtCost(l);
   block("Cost", c ? "≈" + c : "—", line(l.unpriced ? t(l.unpriced === 1 ? "{n} call had no known price and is not counted" : "{n} calls had no known price and are not counted", { n: l.unpriced }) : t("effective prices")), c ? "cost" : "");
   const hit = block("Cache hit rate", rate === null ? "—" : (100 * rate).toFixed(1) + "%", cacheLeftOut(l) ? line(cacheLeftOut(l)) : null, "", t("The share of the prompt read from the cache"));
@@ -1643,7 +1653,7 @@ const LED_COLS = [
 // Discord): its content came in under a quarter of its window (flow_ms),
 // or its answer at over 20 times the pace its reasoning came before it
 const ledDecode = (r) => {
-  if (ledFailed_(r) || r.reasoning_hidden && !(r.first_text_ms > 0) || !(r.ttft_ms > 0)) return null;
+  if (ledFailed_(r) || r.canceled || r.reasoning_hidden && !(r.first_text_ms > 0) || !(r.ttft_ms > 0)) return null;
   const think = r.reasoning > 0, visible = think && !(r.first_text_ms > 0) && r.first_reasoning_ms >= r.ttft_ms && r.flow_ms > 0 && r.reasoning <= r.out;
   const n = think && !visible ? r.out - r.reasoning : r.out, from = visible ? r.first_reasoning_ms : think ? r.first_text_ms : r.ttft_ms;
   const w = r.ms - from;
@@ -1694,7 +1704,7 @@ const ledRowSpeed = (r) => { const d = ledDecode(r); return d ? d.n / (d.w / 100
 const LED_FLOOR_AGENTS = new Set(["claude", "claude-desktop", "codex"]);
 const ledWhole_ = (r) => r.out >= 1000 && r.ms >= 1000 && r.out * 1000 <= 10000 * r.ms;
 const ledFloor_ = (r) => {
-  if (ledFailed_(r) || ledRowSpeed(r)) return null;
+  if (ledFailed_(r) || r.canceled || ledRowSpeed(r)) return null;
   if (r.source !== "log") {
     const n = r.out - (r.reasoning || 0), w = r.ms - r.ttft_ms;
     if (r.ttft_ms > 0 && r.reasoning > 0 && !(r.first_text_ms > 0) && n >= LED_CODEX_BODY && w >= LED_CODEX_WINDOW_MS && n * 1000 <= 10000 * w && !(r.flow_ms > 0 && r.flow_ms * 4 < w)) return { n, w, answer: true, gateway: true };
@@ -1712,6 +1722,7 @@ const ledFloor_ = (r) => {
 // is never left unexplained: ledDecode's reasons, in its order
 const ledNoSpeed_ = (r) => {
   if (ledFailed_(r)) return t("A failed request tells no speed");
+  if (r.canceled) return t("A canceled request tells no speed");
   if (!(r.ms > 0)) return t("No duration was recorded to time a speed from");
   if (!(r.out > 0)) return t("No output tokens to time a speed from");
   if (!(r.ttft_ms > 0)) return r.source === "log" ? t("The session file has no first token to time a speed from") : t("Not streamed: no first token to time a speed from");

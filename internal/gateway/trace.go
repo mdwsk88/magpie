@@ -96,9 +96,14 @@ type Route struct {
 	Done   bool    `json:"done"`
 	Status int     `json:"status,omitempty"`
 	Error  string  `json:"error,omitempty"`
-	Millis int64   `json:"ms,omitempty"`
-	Tokens int     `json:"tokens,omitempty"`
-	Output int     `json:"out,omitempty"` // of Tokens, the reply's
+	// Canceled: the agent canceled the request before it was answered
+	// (usage.CanceledBy). Its agent saw no error, so it isn't one of
+	// the errors the page counts. Set as it is done, and as a day's
+	// history is read, for a route kept before it was
+	Canceled bool  `json:"canceled,omitempty"`
+	Millis   int64 `json:"ms,omitempty"`
+	Tokens   int   `json:"tokens,omitempty"`
+	Output   int   `json:"out,omitempty"` // of Tokens, the reply's
 	// Reasoning: of Output, the reply's reasoning, which its speed leaves
 	// out (usage.DecodeOf)
 	Reasoning int `json:"reasoning,omitempty"`
@@ -715,7 +720,8 @@ func (t *trace) update(r *Route, f func(r *Route)) {
 				t.totals.Rerouted++
 			}
 		}
-		if r.Status >= 400 || r.Error != "" {
+		r.Canceled = usage.CanceledBy(r.Status, r.Error)
+		if (r.Status >= 400 || r.Error != "") && !r.Canceled {
 			t.totals.Errors++
 		}
 		t.turns.end(r, r.Status < 400 && r.Error == "" && !r.tools.called(), time.Now())
