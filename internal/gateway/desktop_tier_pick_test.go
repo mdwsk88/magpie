@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -70,6 +71,118 @@ func tierEntries(t *testing.T, list []map[string]any) map[string]map[string]any 
 		}
 	}
 	return out
+}
+
+// A model picked for two of Claude Desktop's tiers (a user's
+// copilot/claude-sonnet-5.5 for sonnet and haiku) was tagged with the
+// first only: Desktop keys inferenceModels by name and reads one tier off
+// an entry, so haiku had no model, Claude Code in the Code tab got an empty
+// ANTHROPIC_DEFAULT_HAIKU_MODEL, and its small tasks (WebFetch's page
+// summaries) ran on the session's model. The second tier is listed once
+// more, after the rows, by the model's id form under a number of its own,
+// which the gateway reads back to the model and serves as the pick.
+func TestDesktopTierSharedPick(t *testing.T) {
+	t.Run("claude model", func(t *testing.T) {
+		u := desktopPickSetup(t)
+		sonnet := shownEntry(t, func(e provider.Entry) bool { return e.ID == "fake/claude-sonnet-5-5" })
+		for _, tier := range []string{"sonnet", "haiku"} {
+			if err := SetDesktopTier(tier, sonnet.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		list, ok := DesktopInferenceModels()
+		shown, _ := provider.CatalogFor("claude-desktop")
+		rows := desktopModels(shown, true)
+		if !ok || len(list) != len(rows)+1 {
+			t.Fatalf("%d entries for %d rows and one more tier: %v", len(list), len(rows), list)
+		}
+		for i, r := range rows {
+			if want := strings.TrimSuffix(r["id"].(string), "[1m]"); list[i]["name"] != want {
+				t.Fatalf("entry %d is %v, /v1/models has %s there", i, list[i]["name"], want)
+			}
+		}
+		tiers := tierEntries(t, list)
+		if e := tiers["sonnet"]; e == nil || e["name"] != DesktopID(sonnet) {
+			t.Fatalf("sonnet: %v", list)
+		}
+		haiku := tiers["haiku"]
+		if haiku == nil {
+			t.Fatalf("haiku has no entry, so Claude Code's ANTHROPIC_DEFAULT_HAIKU_MODEL is empty: %v", list)
+		}
+		alias, _ := haiku["name"].(string)
+		if !regexp.MustCompile(`^magpie-\d{10}\.anthropic\.claude-sonnet-5-5$`).MatchString(alias) || alias == DesktopID(sonnet) ||
+			haiku["isFamilyDefault"] != true || list[len(list)-1]["name"] != alias {
+			t.Fatalf("haiku's entry: %v (sonnet's name %s)", haiku, DesktopID(sonnet))
+		}
+		if _, has := haiku["behavesAs"]; has {
+			t.Fatalf("Claude Code knows %s as Claude Sonnet 5.5: %v", alias, haiku)
+		}
+		if l, _ := haiku["labelOverride"].(string); !strings.HasSuffix(l, " · haiku") {
+			t.Fatalf("haiku's label: %v", haiku)
+		}
+		for _, id := range []string{alias, alias + "[1m]"} {
+			if got := DesktopCatalogID(id); got != sonnet.ID {
+				t.Fatalf("%s read back as %q", id, got)
+			}
+		}
+		if a := DesktopTierAliases(); len(a) != 1 || len(a[sonnet.ID]) != 1 || a[sonnet.ID][0] != alias {
+			t.Fatalf("tier aliases: %v", a)
+		}
+
+		// the session on m1; Claude Code's small task for the haiku tier,
+		// by that entry's name, goes to the pick, not the session's model
+		s := New()
+		m1 := shownEntry(t, func(e provider.Entry) bool { return e.ID == "fake/m1" })
+		desktopSubagentAsk(t, s, Token+"-claude-desktop", DesktopID(m1), "", "/v1/messages", true)
+		if m, _ := u.seen(); m != "m1" {
+			t.Fatalf("the session's turn went to %q", m)
+		}
+		desktopSubagentAsk(t, s, Token+"-claude-desktop", alias, "", "/v1/messages", false)
+		if m, _ := u.seen(); m != "claude-sonnet-5-5" {
+			t.Fatalf("haiku's small task went to %q, want the haiku pick claude-sonnet-5-5", m)
+		}
+
+		// the picks apart again: one entry a tier, none more
+		if err := SetDesktopTier("haiku", "fake/m1"); err != nil {
+			t.Fatal(err)
+		}
+		if list, _ := DesktopInferenceModels(); len(list) != len(rows) {
+			t.Fatalf("picks apart: %v", list)
+		}
+		if a := DesktopTierAliases(); a != nil {
+			t.Fatalf("picks apart, tier aliases: %v", a)
+		}
+	})
+
+	t.Run("other model", func(t *testing.T) {
+		desktopPickSetup(t)
+		m1 := shownEntry(t, func(e provider.Entry) bool { return e.ID == "fake/m1" })
+		for _, tier := range []string{"opus", "haiku"} {
+			if err := SetDesktopTier(tier, m1.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+		list, _ := DesktopInferenceModels()
+		tiers := tierEntries(t, list)
+		opus, haiku := tiers["opus"], tiers["haiku"]
+		if opus == nil || opus["name"] != DesktopID(m1) || opus["behavesAs"] != "claude-opus-5-5" {
+			t.Fatalf("opus: %v", list)
+		}
+		if haiku == nil {
+			t.Fatalf("haiku has no entry: %v", list)
+		}
+		alias, _ := haiku["name"].(string)
+		if !regexp.MustCompile(`^mythos-magpie-\d{10}$`).MatchString(alias) || alias == DesktopID(m1) || haiku["behavesAs"] != "claude-haiku-5-5" {
+			t.Fatalf("haiku's entry: %v", haiku)
+		}
+		as, ok := DesktopBehavesAs()
+		if !ok || as[DesktopID(m1)] != "claude-opus-5-5" || as[alias] != "claude-haiku-5-5" || len(as) != 2 {
+			t.Fatalf("behaves as: %v %v", as, ok)
+		}
+		if got := DesktopCatalogID(alias); got != m1.ID {
+			t.Fatalf("%s read back as %q", alias, got)
+		}
+	})
 }
 
 // A routing group led by a Claude model, picked for a tier, is shown to
